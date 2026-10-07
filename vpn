@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+vpn_list() {
+    nmcli -t -f NAME,TYPE,DEVICE connection show |
+    while IFS=: read name type device; do
+        if [[ $type == wireguard ]]; then
+            if [[ -n $device ]]; then
+                echo "$name active"
+            else
+                echo "$name inactive"
+            fi
+        fi
+    done | sort
+}
+
+vpn_state() {
+    local name state
+    while read -r name state; do
+        if [[ $name == "$1" ]]; then
+            echo "$state"
+            return 0
+        fi
+    done < <(vpn_list)
+    return 1
+}
+
+vpn_up() {
+	[[ -z $1 ]] && { echo "usage: vpn up <name>" >&2; return 1; }
+	local state name other_state
+	state=$(vpn_state "$1") || { echo "error: $1 is not a vpn connection" >&2; return 1; }
+	[[ $state == active ]] && { echo "vpn: $1 is already up" ; return 0; }
+	if [[ $1 == proton-* ]]; then
+		while read -r name other_state; do
+			[[ $name == proton-* && $other_state == active ]] && vpn_down "$name"
+		done < <(vpn_list)
+	fi
+	nmcli connection up "$1"
+}
+
+vpn_down() {
+	[[ -z $1 ]] && { echo "usage: vpn down <name>" >&2; return 1; }
+	local state
+	state=$(vpn_state "$1") || { echo "error: $1 is not a vpn connection" >&2; return 1; }
+	[[ $state == inactive ]] && { echo "vpn: $1 is already down" ; return 0; }
+	nmcli connection down "$1"
+}
+
+case "$1" in
+    list) vpn_list ;;
+    up)   vpn_up "$2" ;;
+    down) vpn_down "$2" ;;
+    *)    echo "usage: vpn {list|up <name>|down <name>}" >&2; exit 1 ;;
+esac
