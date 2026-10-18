@@ -26,7 +26,7 @@ vpn_state() {
 
 vpn_up() {
 	[[ -z $1 ]] && { echo "usage: vpn up <name>" >&2; return 1; }
-	local state name other_state
+	local state name other_state err
 	state=$(vpn_state "$1") || { echo "error: $1 is not a vpn connection" >&2; return 1; }
 	[[ $state == active ]] && { echo "vpn: $1 is already up" ; return 0; }
 	if [[ $1 == proton-* ]]; then
@@ -34,20 +34,89 @@ vpn_up() {
 			[[ $name == proton-* && $other_state == active ]] && vpn_down "$name"
 		done < <(vpn_list)
 	fi
-	nmcli connection up "$1"
+
+    if err=$(nmcli connection up "$1" 2>&1 > /dev/null); then
+        notify-send -a VPN "VPN connected" "$1"
+    else
+        notify-send -a VPN -u critical "VPN error" "Could not connect $1: $err"
+        echo "error: $err" >&2
+        return 1
+    fi
 }
 
 vpn_down() {
 	[[ -z $1 ]] && { echo "usage: vpn down <name>" >&2; return 1; }
-	local state
+	local state err
 	state=$(vpn_state "$1") || { echo "error: $1 is not a vpn connection" >&2; return 1; }
 	[[ $state == inactive ]] && { echo "vpn: $1 is already down" ; return 0; }
-	nmcli connection down "$1"
+
+    if err=$(nmcli connection down "$1" 2>&1 > /dev/null); then
+        notify-send -a VPN "VPN disconnected" "$1"
+    else
+        notify-send -a VPN -u critical "VPN error" "Could not disconnect $1: $err"
+        echo "error: $err" >&2
+        return 1
+    fi
+}
+
+vpn_bar() {
+    local name state names=""
+
+    # 1. Collect the names of all active tunnels
+    while read -r name state; do
+        if [[ $state == active ]]; then
+            names+="${names:+, }$name"
+        fi
+    done < <(vpn_list)
+
+    # 2. Decide tooltip and class
+    local tooltip class
+    if [[ -n $names ]]; then
+        tooltip=$names
+        class=active
+    else
+        tooltip="VPN off"
+        class=""
+    fi
+
+    # 3. Print JSON
+    jq -cn --arg text $'\U000f0d34' --arg tooltip "$tooltip" --arg class "$class" \
+        '{text: $text, tooltip: $tooltip, class: $class}'
+}
+
+vpn_menu() {
+    local name state icon choice
+    local options=()
+
+    # 1. Build one menu option per tunnel: "<icon><TAB><name>"
+    while read -r name state; do
+        if [[ $state == active ]]; then
+            icon=$'\uf00c'      # checkmark
+        else
+            icon=$'\uf10c'      # empty circle
+        fi
+        options+=("$icon"$'\t'"$name")
+    done < <(vpn_list)
+
+    (( ${#options[@]} > 0 )) || { echo "error: no vpn connections found" >&2; return 1; }
+
+    # 2. Show the menu; Esc means "cancelled", not an error
+    choice=$(omarchy-menu-select "VPN" "${options[@]}") || return 0
+
+    # 3. Toggle the chosen tunnel
+    state=$(vpn_state "$choice") || return 1
+    if [[ $state == active ]]; then
+        vpn_down "$choice"
+    else
+        vpn_up "$choice"
+    fi
 }
 
 case "$1" in
-    list) vpn_list ;;
+	menu) vpn_menu ;;
+	bar)  vpn_bar ;;
+	list) vpn_list ;;
     up)   vpn_up "$2" ;;
     down) vpn_down "$2" ;;
-    *)    echo "usage: vpn {list|up <name>|down <name>}" >&2; exit 1 ;;
+    *)    echo "usage: vpn {list|up <name>|down <name>|menu|bar}" >&2; exit 1 ;;
 esac
